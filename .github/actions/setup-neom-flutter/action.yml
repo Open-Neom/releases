@@ -1,0 +1,46 @@
+name: 'Setup Neom Flutter & Private Modules'
+description: 'Configures GitHub PAT for multi-org private modules, removes local pubspec_overrides.yaml, sets up Flutter SDK with cache, and runs flutter pub get.'
+
+inputs:
+  flutter_channel:
+    description: 'Flutter channel to install'
+    required: false
+    default: 'stable'
+  gh_modules_pat:
+    description: 'GitHub PAT with read access to Open-Neom, Cyberneom, and emmanuel-montoya private modules'
+    required: false
+    default: ''
+  working_directory:
+    description: 'Working directory of the Flutter project'
+    required: false
+    default: '.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure Git HTTPS rewrite for multi-org Neom modules
+      shell: bash
+      env:
+        GH_PAT: ${{ inputs.gh_modules_pat }}
+      run: |
+        if [ -n "$GH_PAT" ]; then
+          git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "git@github.com:"
+          git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "ssh://git@github.com/"
+          echo "Configured GitHub token rewrite for SSH module URLs."
+        else
+          echo "::warning::GH_MODULES_PAT secret is empty. Only public GitHub modules will be accessible."
+        fi
+
+    - name: Setup Flutter SDK
+      uses: subosito/flutter-action@v2
+      with:
+        channel: ${{ inputs.flutter_channel }}
+        cache: true
+
+    - name: Unify CI Git Dependency Overrides & Run flutter pub get
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        dart run "${{ github.action_path }}/../../../scripts/generate_ci_overrides.dart" .
+        flutter --version
+        flutter pub get

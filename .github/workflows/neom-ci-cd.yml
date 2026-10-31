@@ -1,0 +1,1000 @@
+name: Neom Unified Multiplatform CI/CD
+
+on:
+  workflow_call:
+    inputs:
+      app_slug:
+        description: 'Canonical lowercase slug (e.g. itzli, emxi, gigmeout, cyberneom, blup, vrlizate)'
+        required: true
+        type: string
+      app_display_name:
+        description: 'Display name used for installer filenames (e.g. Itzli, EMXI, Blup)'
+        required: true
+        type: string
+      flutter_channel:
+        description: 'Flutter channel'
+        required: false
+        type: string
+        default: 'stable'
+      build_number_offset:
+        description: 'Optional fallback offset only if pubspec.yaml has no +build suffix'
+        required: false
+        type: number
+        default: 0
+      releases_repo:
+        description: 'Public GitHub repository hosting Reusable Workflows and downloadable binaries'
+        required: false
+        type: string
+        default: 'Open-Neom/releases'
+      apple_runner:
+        description: 'Runner label for iOS and macOS jobs (macos-latest now; change to self-hosted for Mac mini M4)'
+        required: false
+        type: string
+        default: 'macos-latest'
+
+      # ── Web & Firebase ──
+      enable_web:
+        description: 'Build Flutter Web and deploy to Firebase Hosting'
+        required: false
+        type: boolean
+        default: true
+      firebase_project_id:
+        description: 'Firebase Project ID (e.g. itzli-app, emxi-9c5b5)'
+        required: false
+        type: string
+        default: ''
+      web_build_args:
+        description: 'Flags passed to flutter build web'
+        required: false
+        type: string
+        default: '--release --no-tree-shake-icons'
+      run_legal_generator:
+        description: 'Run neom_commons legal generator pre/post web build'
+        required: false
+        type: boolean
+        default: false
+      deploy_firestore_rules:
+        description: 'Deploy firestore:rules alongside web hosting when present'
+        required: false
+        type: boolean
+        default: false
+      deploy_functions:
+        description: 'Test and deploy Firebase Cloud Functions when present'
+        required: false
+        type: boolean
+        default: false
+
+      # ── Mobile Stores ──
+      enable_android:
+        description: 'Build Android AAB (+ APK) and submit to Google Play Store'
+        required: false
+        type: boolean
+        default: false
+      android_package_name:
+        description: 'Android applicationId (e.g. org.emxi.app, ai.itzli.app)'
+        required: false
+        type: string
+        default: ''
+      play_track:
+        description: 'Google Play track (production, internal, alpha, beta)'
+        required: false
+        type: string
+        default: 'production'
+      play_release_status:
+        description: 'Google Play release status (completed or draft)'
+        required: false
+        type: string
+        default: 'completed'
+      publish_apk_to_releases:
+        description: 'Also publish universal Release APK to Open-Neom/releases'
+        required: false
+        type: boolean
+        default: true
+
+      enable_ios:
+        description: 'Build signed iOS IPA and upload/submit to App Store Connect'
+        required: false
+        type: boolean
+        default: false
+      ios_bundle_id:
+        description: 'iOS Bundle Identifier (e.g. org.emxi.app, ai.itzli.app)'
+        required: false
+        type: string
+        default: ''
+      apple_team_id:
+        description: 'Apple Developer Team ID'
+        required: false
+        type: string
+        default: '4ZY3D2GU99'
+      ios_submit_for_review:
+        description: 'Automatically submit uploaded build for App Store Production Review'
+        required: false
+        type: boolean
+        default: true
+
+      # ── Desktop Installers (.exe, .dmg, .AppImage) ──
+      enable_windows:
+        description: 'Build Windows x64 and package Inno Setup .exe installer'
+        required: false
+        type: boolean
+        default: false
+      enable_macos:
+        description: 'Build macOS Universal/ARM64 and package .dmg installer'
+        required: false
+        type: boolean
+        default: false
+      enable_linux:
+        description: 'Build Linux x64 and package portable .AppImage + .tar.gz'
+        required: false
+        type: boolean
+        default: false
+
+    secrets:
+      GH_MODULES_PAT:
+        description: 'PAT with read access to private Neom modules and write access to Open-Neom/releases'
+        required: false
+      FIREBASE_SERVICE_ACCOUNT:
+        description: 'Firebase Service Account JSON for Hosting, Rules, and Functions'
+        required: false
+      ANDROID_KEYSTORE_BASE64:
+        description: 'Base64-encoded Android upload keystore (.jks / .keystore)'
+        required: false
+      ANDROID_KEY_ALIAS:
+        description: 'Android keystore alias'
+        required: false
+      ANDROID_KEY_PASSWORD:
+        description: 'Android key password'
+        required: false
+      ANDROID_STORE_PASSWORD:
+        description: 'Android store password'
+        required: false
+      GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:
+        description: 'Google Play Console Service Account JSON'
+        required: false
+      IOS_DIST_CERT_BASE64:
+        description: 'Base64-encoded Apple Distribution certificate (.p12) for Team 4ZY3D2GU99'
+        required: false
+      IOS_DIST_CERT_PASSWORD:
+        description: 'Password for the Apple Distribution .p12 certificate'
+        required: false
+      APPSTORE_API_KEY_ID:
+        description: 'App Store Connect API Key ID (e.g. 2X9R4HXF34)'
+        required: false
+      APPSTORE_API_ISSUER_ID:
+        description: 'App Store Connect API Issuer ID (UUID)'
+        required: false
+      APPSTORE_API_PRIVATE_KEY:
+        description: 'App Store Connect API .p8 Private Key contents'
+        required: false
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════
+  # 1. PREPARE ZERO-TOUCH VERSIONING, AUTO-CHANGELOG & TARGETS
+  # ═══════════════════════════════════════════════════════════════════
+  prepare:
+    name: Prepare Auto-Version & Changelog
+    runs-on: ubuntu-latest
+    outputs:
+      semver: ${{ steps.meta.outputs.semver }}
+      build_number: ${{ steps.meta.outputs.build_number }}
+      full_version: ${{ steps.meta.outputs.full_version }}
+      safe_name: ${{ steps.meta.outputs.safe_name }}
+      is_new_version: ${{ steps.meta.outputs.is_new_version }}
+      skip_ci: ${{ steps.guard.outputs.skip_ci }}
+      has_hosting: ${{ steps.meta.outputs.has_hosting }}
+      has_firestore_rules: ${{ steps.meta.outputs.has_firestore_rules }}
+      has_functions: ${{ steps.meta.outputs.has_functions }}
+    steps:
+      - name: Checkout App Repository (Full History for Auto-Changelog)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+          token: ${{ secrets.GH_MODULES_PAT || github.token }}
+
+      - name: Guard Against Automated Release Commit Loops
+        id: guard
+        run: |
+          HEAD_MSG="$(git log -1 --pretty=%B || true)"
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && echo "$HEAD_MSG" | grep -qiE '^chore\(release\):|\[skip ci\]'; then
+            echo "skip_ci=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Commit automático de release detectado; omitiendo ejecución duplicada."
+          else
+            echo "skip_ci=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout CI/CD Helpers
+        if: steps.guard.outputs.skip_ci != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.releases_repo }}
+          path: .cicd_tools
+
+      - name: Setup Node.js 22
+        if: steps.guard.outputs.skip_ci != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Auto-Bump Version, Generate Changelog & Inspect Targets
+        if: steps.guard.outputs.skip_ci != 'true'
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GH_MODULES_PAT }}
+          GOOGLE_PLAY_SA_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            gh release download manifest --repo "${{ inputs.releases_repo }}" --pattern "releases-manifest.json" --dir . --clobber 2>/dev/null || true
+          fi
+
+          node .cicd_tools/scripts/auto_release_meta.mjs \
+            --slug "${{ inputs.app_slug }}" \
+            --name "${{ inputs.app_display_name }}" \
+            --releases-repo "${{ inputs.releases_repo }}" \
+            --android-package "${{ inputs.android_package_name }}" \
+            --build-offset "${{ inputs.build_number_offset }}" \
+            --run-number "${{ github.run_number }}" \
+            --out-dir release-meta
+
+          echo "is_new_version=true" >> "$GITHUB_OUTPUT"
+
+          if [ -f "firebase.json" ]; then
+            node -e '
+              const fs = require("fs");
+              const cfg = JSON.parse(fs.readFileSync("firebase.json", "utf8"));
+              const out = [];
+              out.push("has_hosting=" + Boolean(cfg.hosting));
+              out.push("has_firestore_rules=" + Boolean(cfg.firestore && cfg.firestore.rules && fs.existsSync(cfg.firestore.rules)));
+              out.push("has_functions=" + Boolean(cfg.functions));
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, out.join("\n") + "\n");
+            '
+          else
+            {
+              echo "has_hosting=false"
+              echo "has_firestore_rules=false"
+              echo "has_functions=false"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync Auto-Version & Changelog Back to App Branch ([skip ci])
+        if: steps.guard.outputs.skip_ci != 'true' && steps.meta.outputs.files_changed == 'true' && github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          git config user.name "open-neom-release-bot"
+          git config user.email "releases@openneom.org"
+          git add pubspec.yaml
+          [ -f CHANGELOG.md ] && git add CHANGELOG.md
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): v${{ steps.meta.outputs.full_version }} [skip ci]"
+            git push origin "HEAD:${{ github.ref_name }}" || echo "::warning::Branch protection impidió commitear pubspec.yaml de vuelta; los binarios y tiendas usan igualmente v${{ steps.meta.outputs.full_version }}."
+          fi
+
+      - name: Upload Generated Release Notes Artifact
+        if: steps.guard.outputs.skip_ci != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-meta
+          path: release-meta/
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 2. WEB BUILD + FIREBASE HOSTING & FIRESTORE RULES
+  # ═══════════════════════════════════════════════════════════════════
+  deploy-web:
+    name: Web & Firebase Hosting
+    needs: [prepare]
+    if: needs.prepare.outputs.skip_ci != 'true' && inputs.enable_web && needs.prepare.outputs.has_hosting == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout App Repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CI/CD Helpers
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.releases_repo }}
+          path: .cicd_tools
+
+      - name: Setup Flutter & Private Modules
+        uses: ./.cicd_tools/.github/actions/setup-neom-flutter
+        with:
+          flutter_channel: ${{ inputs.flutter_channel }}
+          gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Pre-build Legal Pages (if enabled)
+        if: inputs.run_legal_generator
+        run: |
+          COMMONS_DIR="$(node .cicd_tools/scripts/resolve_package_path.mjs neom_commons .)"
+          LEGAL_GEN="$COMMONS_DIR/tool/legal/generate.mjs"
+          if [ -f "$LEGAL_GEN" ]; then
+            node "$LEGAL_GEN" --app-dir "$PWD" --require-published
+          else
+            echo "::warning::Legal generator not found at $LEGAL_GEN"
+          fi
+
+      - name: Build Flutter Web Release
+        run: |
+          flutter build web ${{ inputs.web_build_args }} \
+            --build-name="${{ needs.prepare.outputs.semver }}" \
+            --build-number="${{ needs.prepare.outputs.build_number }}"
+
+      - name: Post-build Legal & Security Preflight Checks
+        run: |
+          if [ "${{ inputs.run_legal_generator }}" = "true" ]; then
+            COMMONS_DIR="$(node .cicd_tools/scripts/resolve_package_path.mjs neom_commons .)"
+            LEGAL_GEN="$COMMONS_DIR/tool/legal/generate.mjs"
+            if [ -f "$LEGAL_GEN" ]; then
+              node "$LEGAL_GEN" --app-dir "$PWD" --output-dir "$PWD/build/web" --check --require-published
+            fi
+          fi
+          if [ -x "scripts/security/preflight_no_client_secrets.sh" ]; then
+            ./scripts/security/preflight_no_client_secrets.sh all
+          fi
+
+      - name: Write Live Download Metadata (build/web/downloads/version.json)
+        run: |
+          mkdir -p build/web/downloads
+          SAFE_NAME="${{ needs.prepare.outputs.safe_name }}"
+          BASE_URL="https://github.com/${{ inputs.releases_repo }}/releases/download/${{ inputs.app_slug }}-latest"
+          cat > build/web/downloads/version.json <<EOF
+          {
+            "appSlug": "${{ inputs.app_slug }}",
+            "appName": "${{ inputs.app_display_name }}",
+            "version": "${{ needs.prepare.outputs.semver }}",
+            "buildNumber": ${{ needs.prepare.outputs.build_number }},
+            "fullVersion": "${{ needs.prepare.outputs.full_version }}",
+            "publishedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "manifestUrl": "https://github.com/${{ inputs.releases_repo }}/releases/download/manifest/releases-manifest.json",
+            "downloads": {
+              "windows": "${BASE_URL}/${SAFE_NAME}-Setup-x64.exe",
+              "macos": "${BASE_URL}/${SAFE_NAME}-macOS.dmg",
+              "linux": "${BASE_URL}/${SAFE_NAME}-Linux-x86_64.AppImage",
+              "linuxTarball": "${BASE_URL}/${SAFE_NAME}-Linux-x64.tar.gz",
+              "androidApk": "${BASE_URL}/${SAFE_NAME}-Android.apk"
+            }
+          }
+          EOF
+
+      - name: Deploy to Firebase Hosting (Live)
+        if: secrets.FIREBASE_SERVICE_ACCOUNT != '' && inputs.firebase_project_id != ''
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ github.token }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: ${{ inputs.firebase_project_id }}
+          channelId: live
+
+      - name: Deploy Firestore Rules
+        if: inputs.deploy_firestore_rules && needs.prepare.outputs.has_firestore_rules == 'true' && secrets.FIREBASE_SERVICE_ACCOUNT != '' && inputs.firebase_project_id != ''
+        env:
+          FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          SA_FILE="$(mktemp)"
+          trap 'rm -f "$SA_FILE"' EXIT
+          printf '%s' "$FIREBASE_SA_JSON" > "$SA_FILE"
+          export GOOGLE_APPLICATION_CREDENTIALS="$SA_FILE"
+          npx --yes firebase-tools@latest deploy --only firestore:rules --project "${{ inputs.firebase_project_id }}" --non-interactive
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 3. FIREBASE CLOUD FUNCTIONS
+  # ═══════════════════════════════════════════════════════════════════
+  deploy-functions:
+    name: Cloud Functions
+    needs: [prepare]
+    if: needs.prepare.outputs.skip_ci != 'true' && inputs.deploy_functions && needs.prepare.outputs.has_functions == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout App Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install & Validate Functions Codebases
+        run: |
+          SOURCES=$(node -e '
+            const cfg = JSON.parse(require("fs").readFileSync("firebase.json", "utf8"));
+            const fn = cfg.functions;
+            const list = Array.isArray(fn) ? fn.map(x => x.source || "functions") : [fn?.source || "functions"];
+            console.log(list.join("\n"));
+          ')
+          for dir in $SOURCES; do
+            if [ -d "$dir" ] && [ -f "$dir/package.json" ]; then
+              echo "=== Installing & validating $dir ==="
+              (
+                cd "$dir"
+                if [ -f "package-lock.json" ]; then
+                  npm ci --no-audit --no-fund
+                else
+                  npm install --no-audit --no-fund
+                fi
+                for js in *.js; do
+                  [ -f "$js" ] && node --check "$js"
+                done
+              )
+            fi
+          done
+
+      - name: Deploy Cloud Functions
+        if: secrets.FIREBASE_SERVICE_ACCOUNT != '' && inputs.firebase_project_id != ''
+        env:
+          FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          SA_FILE="$(mktemp)"
+          trap 'rm -f "$SA_FILE"' EXIT
+          printf '%s' "$FIREBASE_SA_JSON" > "$SA_FILE"
+          export GOOGLE_APPLICATION_CREDENTIALS="$SA_FILE"
+          npx --yes firebase-tools@latest deploy --only functions --project "${{ inputs.firebase_project_id }}" --non-interactive
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 4. ANDROID BUILD (.aab -> Google Play Production + .apk -> Releases)
+  # ═══════════════════════════════════════════════════════════════════
+  build-android:
+    name: Android (Play Store & APK)
+    needs: [prepare]
+    if: needs.prepare.outputs.skip_ci != 'true' && inputs.enable_android && needs.prepare.outputs.is_new_version == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout App Repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CI/CD Helpers
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.releases_repo }}
+          path: .cicd_tools
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter & Private Modules
+        uses: ./.cicd_tools/.github/actions/setup-neom-flutter
+        with:
+          flutter_channel: ${{ inputs.flutter_channel }}
+          gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
+
+      - name: Configure Android Release Signing
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEY_ALIAS" ]; then
+            APP_INITIAL="$(echo "${{ inputs.app_slug }}" | tr '[:upper:]' '[:lower:]' | cut -c1)"
+            JKS_NAME="uk-${APP_INITIAL}.jks"
+            echo "$KEYSTORE_B64" | base64 --decode > "android/app/${JKS_NAME}"
+            cat > android/key.properties <<EOF
+          storePassword=${STORE_PASSWORD}
+          keyPassword=${KEY_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          storeFile=${PWD}/android/app/${JKS_NAME}
+          EOF
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 / ANDROID_KEY_ALIAS not configured yet; building unsigned/debug-signed artifacts only."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Android App Bundle (.aab) & Universal APK (.apk)
+        run: |
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            flutter build appbundle --release --no-tree-shake-icons \
+              --build-name="${{ needs.prepare.outputs.semver }}" \
+              --build-number="${{ needs.prepare.outputs.build_number }}"
+          fi
+          if [ "${{ inputs.publish_apk_to_releases }}" = "true" ]; then
+            if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+              flutter build apk --release --no-tree-shake-icons \
+                --build-name="${{ needs.prepare.outputs.semver }}" \
+                --build-number="${{ needs.prepare.outputs.build_number }}"
+              mkdir -p dist
+              cp build/app/outputs/flutter-apk/app-release.apk "dist/${{ needs.prepare.outputs.safe_name }}-Android.apk"
+            else
+              flutter build apk --debug \
+                --build-name="${{ needs.prepare.outputs.semver }}" \
+                --build-number="${{ needs.prepare.outputs.build_number }}"
+            fi
+          fi
+
+      - name: Upload APK Artifact for Public Releases
+        if: inputs.publish_apk_to_releases && steps.signing.outputs.signed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-android-apk
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Download Auto-Generated Release Notes
+        if: steps.signing.outputs.signed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-meta
+          path: release-meta
+
+      - name: Publish AAB to Google Play Store (${{ inputs.play_track }})
+        if: steps.signing.outputs.signed == 'true' && secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' && inputs.android_package_name != ''
+        id: play_completed
+        continue-on-error: true
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ inputs.android_package_name }}
+          releaseFiles: build/app/outputs/bundle/release/app-release.aab
+          track: ${{ inputs.play_track }}
+          status: ${{ inputs.play_release_status }}
+          whatsNewDirectory: release-meta/whatsnew
+
+      - name: Fallback to Draft Release on Google Play (for unreviewed new apps)
+        if: steps.signing.outputs.signed == 'true' && secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' && inputs.android_package_name != '' && steps.play_completed.outcome == 'failure' && inputs.play_release_status != 'draft'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ inputs.android_package_name }}
+          releaseFiles: build/app/outputs/bundle/release/app-release.aab
+          track: ${{ inputs.play_track }}
+          status: draft
+          whatsNewDirectory: release-meta/whatsnew
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 5. iOS BUILD (.ipa -> App Store Connect & Production Review)
+  # ═══════════════════════════════════════════════════════════════════
+  build-ios:
+    name: iOS (App Store Connect)
+    needs: [prepare]
+    if: needs.prepare.outputs.skip_ci != 'true' && inputs.enable_ios && needs.prepare.outputs.is_new_version == 'true'
+    runs-on: ${{ inputs.apple_runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout App Repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CI/CD Helpers
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.releases_repo }}
+          path: .cicd_tools
+
+      - name: Setup Flutter & Private Modules
+        uses: ./.cicd_tools/.github/actions/setup-neom-flutter
+        with:
+          flutter_channel: ${{ inputs.flutter_channel }}
+          gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
+
+      - name: Build & Sign iOS IPA (Automatic Cloud Signing via App Store Connect API)
+        id: ios_build
+        env:
+          CERT_B64: ${{ secrets.IOS_DIST_CERT_BASE64 }}
+          CERT_PASS: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+        run: |
+          if [ -z "$CERT_B64" ] || [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_PRIVATE_KEY" ]; then
+            echo "::warning::Apple signing secrets incomplete; running unsigned compile check (flutter build ios --release --no-codesign)."
+            flutter build ios --release --no-codesign \
+              --build-name="${{ needs.prepare.outputs.semver }}" \
+              --build-number="${{ needs.prepare.outputs.build_number }}"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 1. Create ephemeral Keychain & import Apple Distribution certificate
+          KEYCHAIN_PATH="$RUNNER_TEMP/neom-signing.keychain-db"
+          KEYCHAIN_PASS="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          CERT_PATH="$RUNNER_TEMP/dist_cert.p12"
+          echo "$CERT_B64" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -P "$CERT_PASS" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          # 2. Write App Store Connect .p8 key
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          KEY_FILE="$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s\n' "$ASC_PRIVATE_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          # 2b. Ensure iOS AppIcons have no alpha channel (prevents Apple ITMS-90717 rejection)
+          swift -e '
+            import AppKit
+            let dir = "ios/Runner/Assets.xcassets/AppIcon.appiconset"
+            if let items = try? FileManager.default.contentsOfDirectory(atPath: dir) {
+              for item in items where item.hasSuffix(".png") {
+                let p = "\(dir)/\(item)"
+                guard let img = NSImage(contentsOfFile: p),
+                      let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
+                let alpha = cg.alphaInfo
+                if alpha != .none && alpha != .noneSkipLast && alpha != .noneSkipFirst {
+                  let w = cg.width, h = cg.height
+                  if let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                         space: CGColorSpaceCreateDeviceRGB(),
+                                         bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) {
+                    ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+                    ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+                    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+                    if let outCg = ctx.makeImage() {
+                      let rep = NSBitmapImageRep(cgImage: outCg)
+                      if let data = rep.representation(using: .png, properties: [:]) {
+                        try? data.write(to: URL(fileURLWithPath: p))
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          '
+
+          # 3. Build Archive & Export IPA with Xcode Automatic Cloud Provisioning
+          flutter build xcarchive --release --no-tree-shake-icons \
+            --build-name="${{ needs.prepare.outputs.semver }}" \
+            --build-number="${{ needs.prepare.outputs.build_number }}"
+
+          ARCHIVE_PATH="$(find build/ios/archive -maxdepth 1 -name '*.xcarchive' | head -n 1)"
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>teamID</key>
+            <string>${{ inputs.apple_team_id }}</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$PWD/build/ios/ipa" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_FILE" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Download Auto-Generated Release Notes
+        if: steps.ios_build.outputs.signed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-meta
+          path: release-meta
+
+      - name: Upload IPA to App Store Connect & Submit for Review
+        if: steps.ios_build.outputs.signed == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: |
+          IPA_FILE="$(find build/ios/ipa -maxdepth 1 -name '*.ipa' | head -n 1)"
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$IPA_FILE" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+          if [ "${{ inputs.ios_submit_for_review }}" = "true" ] && [ -n "${{ inputs.ios_bundle_id }}" ]; then
+            KEY_FILE="$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+            API_JSON="$RUNNER_TEMP/asc_api_key.json"
+            node -e '
+              const fs = require("fs");
+              fs.writeFileSync(process.argv[1], JSON.stringify({
+                key_id: process.env.ASC_KEY_ID,
+                issuer_id: process.env.ASC_ISSUER_ID,
+                key: fs.readFileSync(process.argv[2], "utf8"),
+                in_house: false
+              }));
+            ' "$API_JSON" "$KEY_FILE"
+
+            mkdir -p "$RUNNER_TEMP/fastlane_meta/es-MX" "$RUNNER_TEMP/fastlane_meta/en-US"
+            cp release-meta/ios_notes.txt "$RUNNER_TEMP/fastlane_meta/es-MX/release_notes.txt"
+            cp release-meta/ios_notes.txt "$RUNNER_TEMP/fastlane_meta/en-US/release_notes.txt"
+
+            fastlane deliver \
+              --api_key_path "$API_JSON" \
+              --app_identifier "${{ inputs.ios_bundle_id }}" \
+              --app_version "${{ needs.prepare.outputs.semver }}" \
+              --build_number "${{ needs.prepare.outputs.build_number }}" \
+              --metadata_path "$RUNNER_TEMP/fastlane_meta" \
+              --skip_binary_upload true \
+              --skip_screenshots true \
+              --overwrite_screenshots false \
+              --precheck_include_in_app_purchases false \
+              --reject_if_possible true \
+              --submit_for_review true \
+              --automatic_release true \
+              --force true || echo "::warning::IPA subido a App Store Connect / TestFlight; para envío automático a revisión verifica que la ficha inicial esté completa en App Store Connect."
+          fi
+
+      - name: Cleanup Ephemeral Keychain & Keys
+        if: always()
+        run: |
+          rm -rf "$HOME/.appstoreconnect/private_keys"
+          security delete-keychain "$RUNNER_TEMP/neom-signing.keychain-db" 2>/dev/null || true
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 6. WINDOWS DESKTOP BUILD (.exe Inno Setup Installer)
+  # ═══════════════════════════════════════════════════════════════════
+  build-windows:
+    name: Windows Installer (.exe)
+    needs: [prepare]
+    if: needs.prepare.outputs.skip_ci != 'true' && inputs.enable_windows && needs.prepare.outputs.is_new_version == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout App Repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CI/CD Helpers
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.releases_repo }}
+          path: .cicd_tools
+
+      - name: Ensure NuGet CLI is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command nuget -ErrorAction SilentlyContinue)) {
+            choco install nuget.commandline --yes --no-progress
+          }
+
+      - name: Setup Flutter & Private Modules
+        uses: ./.cicd_tools/.github/actions/setup-neom-flutter
+        with:
+          flutter_channel: ${{ inputs.flutter_channel }}
+          gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
+
+      - name: Build Windows Release
+        shell: pwsh
+        run: |
+          flutter config --enable-windows-desktop
+          flutter build windows --release --no-tree-shake-icons `
+            --build-name="${{ needs.prepare.outputs.semver }}" `
+            --build-number="${{ needs.prepare.outputs.build_number }}"
+
+      - name: Package Inno Setup Installer (.exe)
+        shell: pwsh
+        run: |
+          ./.cicd_tools/scripts/package_windows_exe.ps1 `
+            -AppSlug "${{ inputs.app_slug }}" `
+            -AppDisplayName "${{ needs.prepare.outputs.safe_name }}" `
+            -AppVersion "${{ needs.prepare.outputs.semver }}" `
+            -OutputDir "dist"
+
+      - name: Upload Windows .exe Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-windows-exe
+          path: dist/*.exe
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 7. macOS DESKTOP BUILD (.dmg Installer)
+  # ═══════════════════════════════════════════════════════════════════
+  build-macos:
+    name: macOS Installer (.dmg)
+    needs: [prepare]
+    if: needs.prepare.outputs.skip_ci != 'true' && inputs.enable_macos && needs.prepare.outputs.is_new_version == 'true'
+    runs-on: ${{ inputs.apple_runner }}
+    timeout-minutes: 50
+    steps:
+      - name: Checkout App Repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CI/CD Helpers
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.releases_repo }}
+          path: .cicd_tools
+
+      - name: Setup Flutter & Private Modules
+        uses: ./.cicd_tools/.github/actions/setup-neom-flutter
+        with:
+          flutter_channel: ${{ inputs.flutter_channel }}
+          gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
+
+      - name: Build macOS Release & Package .dmg
+        run: |
+          flutter config --enable-macos-desktop
+          flutter build macos --release --no-tree-shake-icons \
+            --build-name="${{ needs.prepare.outputs.semver }}" \
+            --build-number="${{ needs.prepare.outputs.build_number }}"
+          bash ./.cicd_tools/scripts/package_macos_dmg.sh "${{ inputs.app_display_name }}" . dist
+
+      - name: Upload macOS .dmg Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-macos-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 8. LINUX DESKTOP BUILD (.AppImage & .tar.gz)
+  # ═══════════════════════════════════════════════════════════════════
+  build-linux:
+    name: Linux Installer (.AppImage)
+    needs: [prepare]
+    if: needs.prepare.outputs.skip_ci != 'true' && inputs.enable_linux && needs.prepare.outputs.is_new_version == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout App Repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CI/CD Helpers
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.releases_repo }}
+          path: .cicd_tools
+
+      - name: Install Linux Desktop Native Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libsecret-1-dev libjsoncpp-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libasound2-dev file libfuse2
+
+      - name: Setup Flutter & Private Modules
+        uses: ./.cicd_tools/.github/actions/setup-neom-flutter
+        with:
+          flutter_channel: ${{ inputs.flutter_channel }}
+          gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
+
+      - name: Build Linux Release & Package .AppImage
+        run: |
+          flutter config --enable-linux-desktop
+          flutter build linux --release --no-tree-shake-icons \
+            --build-name="${{ needs.prepare.outputs.semver }}" \
+            --build-number="${{ needs.prepare.outputs.build_number }}"
+          bash ./.cicd_tools/scripts/package_linux_appimage.sh \
+            "${{ inputs.app_slug }}" \
+            "${{ inputs.app_display_name }}" \
+            . dist
+
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-linux-appimage
+          path: |
+            dist/*.AppImage
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 9. PUBLISH INSTALLERS TO PUBLIC CDN REPO (Open-Neom/releases)
+  # ═══════════════════════════════════════════════════════════════════
+  publish-releases:
+    name: Publish Installers & Manifest
+    needs: [prepare, build-android, build-windows, build-macos, build-linux]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.skip_ci != 'true' &&
+      needs.prepare.outputs.is_new_version == 'true' &&
+      (inputs.enable_windows || inputs.enable_macos || inputs.enable_linux || (inputs.enable_android && inputs.publish_apk_to_releases))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout App Repository (for CHANGELOG.md)
+        uses: actions/checkout@v4
+
+      - name: Checkout CI/CD Helpers
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.releases_repo }}
+          path: .cicd_tools
+
+      - name: Download All Built Installer Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: raw_artifacts
+
+      - name: Collect Installers & Publish to ${{ inputs.releases_repo }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_MODULES_PAT }}
+        run: |
+          mkdir -p collected
+          find raw_artifacts -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.tar.gz" -o -name "*.apk" \) -exec cp {} collected/ \;
+
+          COUNT=$(ls -1 collected 2>/dev/null | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::warning::No binary installers were produced in upstream jobs; skipping GitHub Release upload."
+            exit 0
+          fi
+
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::GH_MODULES_PAT is required to publish binaries to ${{ inputs.releases_repo }}."
+            exit 0
+          fi
+
+          REPO="${{ inputs.releases_repo }}"
+          SLUG="${{ inputs.app_slug }}"
+          NAME="${{ inputs.app_display_name }}"
+          SEMVER="${{ needs.prepare.outputs.semver }}"
+          BUILD_NUM="${{ needs.prepare.outputs.build_number }}"
+          VERSION_TAG="${SLUG}-v${SEMVER}+${BUILD_NUM}"
+          LATEST_TAG="${SLUG}-latest"
+
+          # Fetch existing releases-manifest.json if present
+          gh release download manifest --repo "$REPO" --pattern "releases-manifest.json" --dir . --clobber 2>/dev/null || true
+
+          node .cicd_tools/scripts/update_release_manifest.mjs \
+            --manifest releases-manifest.json \
+            --slug "$SLUG" \
+            --name "$NAME" \
+            --version "$SEMVER" \
+            --build "$BUILD_NUM" \
+            --repo "$REPO" \
+            --artifacts-dir collected
+
+          if [ -f "raw_artifacts/release-meta/release_notes.md" ]; then
+            cp raw_artifacts/release-meta/release_notes.md release_notes.md
+          else
+            node .cicd_tools/scripts/extract_changelog.mjs --md-out release_notes.md
+          fi
+
+          # 1. Immutable versioned release (audit trail & rollback)
+          gh release create "$VERSION_TAG" collected/* \
+            --repo "$REPO" \
+            --title "${NAME} v${SEMVER} (build ${BUILD_NUM})" \
+            --notes-file release_notes.md
+
+          # 2. Rolling evergreen <slug>-latest release (permanent website download URLs)
+          if ! gh release view "$LATEST_TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$LATEST_TAG" collected/* \
+              --repo "$REPO" \
+              --title "${NAME} — Latest Release (v${SEMVER}+${BUILD_NUM})" \
+              --notes-file release_notes.md
+          else
+            gh release upload "$LATEST_TAG" collected/* --repo "$REPO" --clobber
+            gh release edit "$LATEST_TAG" \
+              --repo "$REPO" \
+              --title "${NAME} — Latest Release (v${SEMVER}+${BUILD_NUM})" \
+              --notes-file release_notes.md
+          fi
+
+          # 3. Global ecosystem manifest release
+          if ! gh release view "manifest" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "manifest" releases-manifest.json \
+              --repo "$REPO" \
+              --title "Open Neom Ecosystem Release Manifest" \
+              --notes "Live JSON index of latest multiplatform binaries across Open Neom apps."
+          else
+            gh release upload "manifest" releases-manifest.json --repo "$REPO" --clobber
+          fi
+
+          # 4. Write summary table with permanent CDN download URLs
+          {
+            echo "## 🚀 ${NAME} v${SEMVER}+${BUILD_NUM} publicado en \`${REPO}\`"
+            echo ""
+            echo "| Archivo | Enlace permanente (CDN GitHub Releases) |"
+            echo "|---|---|"
+            for f in collected/*; do
+              bn="$(basename "$f")"
+              echo "| \`$bn\` | https://github.com/${REPO}/releases/download/${LATEST_TAG}/${bn} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
