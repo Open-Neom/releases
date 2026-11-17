@@ -465,6 +465,17 @@ jobs:
           flutter_channel: ${{ inputs.flutter_channel }}
           gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
 
+      - name: Cache Verified ONNX Runtime Android AAR (if required by app)
+        if: hashFiles('scripts/android/prepare_ort_1_28_2.sh') != ''
+        uses: actions/cache@v4
+        with:
+          path: android/.gradle-local-ort
+          key: ort-android-1.28.2-${{ hashFiles('scripts/android/prepare_ort_1_28_2.sh') }}
+
+      - name: Prepare & Verify ONNX Runtime Android 1.28.2 AAR
+        if: hashFiles('scripts/android/prepare_ort_1_28_2.sh') != ''
+        run: bash scripts/android/prepare_ort_1_28_2.sh
+
       - name: Configure Android Release Signing
         id: signing
         env:
@@ -508,6 +519,38 @@ jobs:
                 --build-name="${{ needs.prepare.outputs.semver }}" \
                 --build-number="${{ needs.prepare.outputs.build_number }}"
             fi
+          fi
+
+      - name: Verify ELF Symbol-Version Symmetry (VERS_1.28.2) on Built AAB/APK
+        if: hashFiles('scripts/android/verify_ort_elf_abi.py') != ''
+        run: |
+          CHECKED=0
+          if [ -f build/app/outputs/bundle/release/app-release.aab ]; then
+            python3 scripts/android/verify_ort_elf_abi.py \
+              --artifact build/app/outputs/bundle/release/app-release.aab \
+              --expected-version VERS_1.28.2 \
+              --require-abis arm64-v8a,armeabi-v7a \
+              --json-out build/ort-elf-aab-report.json
+            CHECKED=$((CHECKED + 1))
+          fi
+          if [ -f build/app/outputs/flutter-apk/app-release.apk ]; then
+            python3 scripts/android/verify_ort_elf_abi.py \
+              --artifact build/app/outputs/flutter-apk/app-release.apk \
+              --expected-version VERS_1.28.2 \
+              --require-abis arm64-v8a,armeabi-v7a \
+              --json-out build/ort-elf-apk-release-report.json
+            CHECKED=$((CHECKED + 1))
+          elif [ -f build/app/outputs/flutter-apk/app-debug.apk ]; then
+            python3 scripts/android/verify_ort_elf_abi.py \
+              --artifact build/app/outputs/flutter-apk/app-debug.apk \
+              --expected-version VERS_1.28.2 \
+              --require-abis arm64-v8a,armeabi-v7a \
+              --json-out build/ort-elf-apk-debug-report.json
+            CHECKED=$((CHECKED + 1))
+          fi
+          if [ "$CHECKED" -eq 0 ]; then
+            echo "::error::No Android AAB or APK artifact found to verify ELF symbol symmetry."
+            exit 1
           fi
 
       - name: Upload APK Artifact for Public Releases
