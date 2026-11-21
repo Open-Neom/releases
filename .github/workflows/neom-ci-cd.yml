@@ -360,8 +360,20 @@ jobs:
           }
           EOF
 
+      - name: Check Firebase Deployment Credentials
+        id: fb_creds
+        env:
+          FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -n "$FIREBASE_SA_JSON" ] && [ -n "${{ inputs.firebase_project_id }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::FIREBASE_SERVICE_ACCOUNT o firebase_project_id no configurado; se omite deploy a Firebase Hosting/Rules."
+          fi
+
       - name: Deploy to Firebase Hosting (Live)
-        if: secrets.FIREBASE_SERVICE_ACCOUNT != '' && inputs.firebase_project_id != ''
+        if: steps.fb_creds.outputs.ready == 'true'
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ github.token }}
@@ -370,7 +382,7 @@ jobs:
           channelId: live
 
       - name: Deploy Firestore Rules
-        if: inputs.deploy_firestore_rules && needs.prepare.outputs.has_firestore_rules == 'true' && secrets.FIREBASE_SERVICE_ACCOUNT != '' && inputs.firebase_project_id != ''
+        if: inputs.deploy_firestore_rules && needs.prepare.outputs.has_firestore_rules == 'true' && steps.fb_creds.outputs.ready == 'true'
         env:
           FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
@@ -423,8 +435,20 @@ jobs:
             fi
           done
 
+      - name: Check Firebase Functions Credentials
+        id: fn_creds
+        env:
+          FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -n "$FIREBASE_SA_JSON" ] && [ -n "${{ inputs.firebase_project_id }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::FIREBASE_SERVICE_ACCOUNT o firebase_project_id no configurado; se omite deploy de Cloud Functions."
+          fi
+
       - name: Deploy Cloud Functions
-        if: secrets.FIREBASE_SERVICE_ACCOUNT != '' && inputs.firebase_project_id != ''
+        if: steps.fn_creds.outputs.ready == 'true'
         env:
           FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
@@ -483,6 +507,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          PLAY_SA_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
         run: |
           if [ -n "$KEYSTORE_B64" ] && [ -n "$KEY_ALIAS" ]; then
             APP_INITIAL="$(echo "${{ inputs.app_slug }}" | tr '[:upper:]' '[:lower:]' | cut -c1)"
@@ -498,6 +523,11 @@ jobs:
           else
             echo "::warning::ANDROID_KEYSTORE_BASE64 / ANDROID_KEY_ALIAS not configured yet; building unsigned/debug-signed artifacts only."
             echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$PLAY_SA_JSON" ] && [ -n "${{ inputs.android_package_name }}" ]; then
+            echo "has_play_sa=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_play_sa=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build Android App Bundle (.aab) & Universal APK (.apk)
@@ -569,7 +599,7 @@ jobs:
           path: release-meta
 
       - name: Publish AAB to Google Play Store (${{ inputs.play_track }})
-        if: steps.signing.outputs.signed == 'true' && secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' && inputs.android_package_name != ''
+        if: steps.signing.outputs.signed == 'true' && steps.signing.outputs.has_play_sa == 'true'
         id: play_completed
         continue-on-error: true
         uses: r0adkll/upload-google-play@v1
@@ -582,7 +612,7 @@ jobs:
           whatsNewDirectory: release-meta/whatsnew
 
       - name: Fallback to Draft Release on Google Play (for unreviewed new apps)
-        if: steps.signing.outputs.signed == 'true' && secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' && inputs.android_package_name != '' && steps.play_completed.outcome == 'failure' && inputs.play_release_status != 'draft'
+        if: steps.signing.outputs.signed == 'true' && steps.signing.outputs.has_play_sa == 'true' && steps.play_completed.outcome == 'failure' && inputs.play_release_status != 'draft'
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
