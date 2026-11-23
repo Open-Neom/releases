@@ -43,6 +43,11 @@ on:
         required: false
         type: string
         default: ''
+      hosting_target:
+        description: 'Optional Firebase Hosting deploy target (e.g. admineom for hosting:admineom)'
+        required: false
+        type: string
+        default: ''
       web_build_args:
         description: 'Flags passed to flutter build web'
         required: false
@@ -53,8 +58,18 @@ on:
         required: false
         type: boolean
         default: false
+      run_tests:
+        description: 'Run dart analyze and flutter test before building/deploying'
+        required: false
+        type: boolean
+        default: false
       deploy_firestore_rules:
-        description: 'Deploy firestore:rules alongside web hosting when present'
+        description: 'Deploy firestore:rules (and firestore:indexes when present) alongside web hosting'
+        required: false
+        type: boolean
+        default: false
+      deploy_storage_rules:
+        description: 'Deploy storage rules alongside web hosting when storage.rules is present'
         required: false
         type: boolean
         default: false
@@ -63,6 +78,16 @@ on:
         required: false
         type: boolean
         default: false
+      gcp_workload_identity_provider:
+        description: 'Optional GCP Workload Identity Provider resource name for keyless OIDC deploy'
+        required: false
+        type: string
+        default: ''
+      gcp_service_account:
+        description: 'Optional GCP Service Account email for keyless OIDC deploy'
+        required: false
+        type: string
+        default: ''
 
       # ── Mobile Stores ──
       enable_android:
@@ -183,6 +208,8 @@ jobs:
       skip_ci: ${{ steps.guard.outputs.skip_ci }}
       has_hosting: ${{ steps.meta.outputs.has_hosting }}
       has_firestore_rules: ${{ steps.meta.outputs.has_firestore_rules }}
+      has_firestore_indexes: ${{ steps.meta.outputs.has_firestore_indexes }}
+      has_storage_rules: ${{ steps.meta.outputs.has_storage_rules }}
       has_functions: ${{ steps.meta.outputs.has_functions }}
     steps:
       - name: Checkout App Repository (Full History for Auto-Changelog)
@@ -244,6 +271,8 @@ jobs:
               const out = [];
               out.push("has_hosting=" + Boolean(cfg.hosting));
               out.push("has_firestore_rules=" + Boolean(cfg.firestore && cfg.firestore.rules && fs.existsSync(cfg.firestore.rules)));
+              out.push("has_firestore_indexes=" + Boolean(cfg.firestore && cfg.firestore.indexes && fs.existsSync(cfg.firestore.indexes)));
+              out.push("has_storage_rules=" + Boolean(cfg.storage && cfg.storage.rules && fs.existsSync(cfg.storage.rules)));
               out.push("has_functions=" + Boolean(cfg.functions));
               fs.appendFileSync(process.env.GITHUB_OUTPUT, out.join("\n") + "\n");
             '
@@ -251,6 +280,8 @@ jobs:
             {
               echo "has_hosting=false"
               echo "has_firestore_rules=false"
+              echo "has_firestore_indexes=false"
+              echo "has_storage_rules=false"
               echo "has_functions=false"
             } >> "$GITHUB_OUTPUT"
           fi
@@ -317,6 +348,12 @@ jobs:
             echo "::warning::Legal generator not found at $LEGAL_GEN"
           fi
 
+      - name: Run Static Analysis & Unit Tests (if enabled)
+        if: inputs.run_tests
+        run: |
+          dart analyze lib test
+          flutter test
+
       - name: Build Flutter Web Release
         run: |
           flutter build web ${{ inputs.web_build_args }} \
@@ -332,6 +369,7 @@ jobs:
               node "$LEGAL_GEN" --app-dir "$PWD" --output-dir "$PWD/build/web" --check --require-published
             fi
           fi
+          bash .cicd_tools/scripts/preflight_no_client_secrets.sh all "$PWD"
           if [ -x "scripts/security/preflight_no_client_secrets.sh" ]; then
             ./scripts/security/preflight_no_client_secrets.sh all
           fi
@@ -360,37 +398,61 @@ jobs:
           }
           EOF
 
+      - name: Authenticate to GCP via Workload Identity Federation (Keyless OIDC)
+        if: inputs.gcp_workload_identity_provider != '' && inputs.gcp_service_account != '' && inputs.firebase_project_id != ''
+        id: gcp_wif
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ inputs.gcp_workload_identity_provider }}
+          service_account: ${{ inputs.gcp_service_account }}
+          create_credentials_file: true
+          export_environment_variables: true
+
       - name: Check Firebase Deployment Credentials
         id: fb_creds
         env:
           FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          if [ -n "$FIREBASE_SA_JSON" ] && [ -n "${{ inputs.firebase_project_id }}" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+          if [ -z "${{ inputs.firebase_project_id }}" ]; then
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "::warning::firebase_project_id no configurado; se omite deploy a Firebase Hosting/Rules."
+          elif [ -n "${{ inputs.gcp_workload_identity_provider }}" ] && [ -n "${{ inputs.gcp_service_account }}" ]; then
+            echo "mode=wif" >> "$GITHUB_OUTPUT"
+          elif [ -n "$FIREBASE_SA_JSON" ]; then
+            echo "mode=sa_json" >> "$GITHUB_OUTPUT"
           else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::FIREBASE_SERVICE_ACCOUNT o firebase_project_id no configurado; se omite deploy a Firebase Hosting/Rules."
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "::warning::Ni WIF ni FIREBASE_SERVICE_ACCOUNT están configurados; se omite deploy a Firebase Hosting/Rules."
           fi
 
-      - name: Deploy to Firebase Hosting (Live)
-        if: steps.fb_creds.outputs.ready == 'true'
-        uses: FirebaseExtended/action-hosting-deploy@v0
-        with:
-          repoToken: ${{ github.token }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          projectId: ${{ inputs.firebase_project_id }}
-          channelId: live
-
-      - name: Deploy Firestore Rules
-        if: inputs.deploy_firestore_rules && needs.prepare.outputs.has_firestore_rules == 'true' && steps.fb_creds.outputs.ready == 'true'
+      - name: Deploy Firebase Hosting, Firestore Rules/Indexes & Storage Rules
+        if: steps.fb_creds.outputs.mode != 'none'
         env:
           FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          SA_FILE="$(mktemp)"
-          trap 'rm -f "$SA_FILE"' EXIT
-          printf '%s' "$FIREBASE_SA_JSON" > "$SA_FILE"
-          export GOOGLE_APPLICATION_CREDENTIALS="$SA_FILE"
-          npx --yes firebase-tools@latest deploy --only firestore:rules --project "${{ inputs.firebase_project_id }}" --non-interactive
+          if [ "${{ steps.fb_creds.outputs.mode }}" = "sa_json" ]; then
+            SA_FILE="$(mktemp)"
+            trap 'rm -f "$SA_FILE"' EXIT
+            printf '%s' "$FIREBASE_SA_JSON" > "$SA_FILE"
+            export GOOGLE_APPLICATION_CREDENTIALS="$SA_FILE"
+          fi
+
+          TARGETS="hosting"
+          if [ -n "${{ inputs.hosting_target }}" ]; then
+            TARGETS="hosting:${{ inputs.hosting_target }}"
+          fi
+          if [ "${{ inputs.deploy_firestore_rules }}" = "true" ] && [ "${{ needs.prepare.outputs.has_firestore_rules }}" = "true" ]; then
+            TARGETS="${TARGETS},firestore:rules"
+            if [ "${{ needs.prepare.outputs.has_firestore_indexes }}" = "true" ]; then
+              TARGETS="${TARGETS},firestore:indexes"
+            fi
+          fi
+          if [ "${{ inputs.deploy_storage_rules }}" = "true" ] && [ "${{ needs.prepare.outputs.has_storage_rules }}" = "true" ]; then
+            TARGETS="${TARGETS},storage"
+          fi
+
+          echo "Deploying Firebase targets: ${TARGETS} -> ${{ inputs.firebase_project_id }} (auth=${{ steps.fb_creds.outputs.mode }})"
+          npx --yes firebase-tools@latest deploy --only "${TARGETS}" --project "${{ inputs.firebase_project_id }}" --non-interactive
 
   # ═══════════════════════════════════════════════════════════════════
   # 3. FIREBASE CLOUD FUNCTIONS
@@ -435,27 +497,42 @@ jobs:
             fi
           done
 
+      - name: Authenticate to GCP via Workload Identity Federation (Keyless OIDC)
+        if: inputs.gcp_workload_identity_provider != '' && inputs.gcp_service_account != '' && inputs.firebase_project_id != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ inputs.gcp_workload_identity_provider }}
+          service_account: ${{ inputs.gcp_service_account }}
+          create_credentials_file: true
+          export_environment_variables: true
+
       - name: Check Firebase Functions Credentials
         id: fn_creds
         env:
           FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          if [ -n "$FIREBASE_SA_JSON" ] && [ -n "${{ inputs.firebase_project_id }}" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+          if [ -z "${{ inputs.firebase_project_id }}" ]; then
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.gcp_workload_identity_provider }}" ] && [ -n "${{ inputs.gcp_service_account }}" ]; then
+            echo "mode=wif" >> "$GITHUB_OUTPUT"
+          elif [ -n "$FIREBASE_SA_JSON" ]; then
+            echo "mode=sa_json" >> "$GITHUB_OUTPUT"
           else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::FIREBASE_SERVICE_ACCOUNT o firebase_project_id no configurado; se omite deploy de Cloud Functions."
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "::warning::Ni WIF ni FIREBASE_SERVICE_ACCOUNT configurados; se omite deploy de Cloud Functions."
           fi
 
       - name: Deploy Cloud Functions
-        if: steps.fn_creds.outputs.ready == 'true'
+        if: steps.fn_creds.outputs.mode != 'none'
         env:
           FIREBASE_SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          SA_FILE="$(mktemp)"
-          trap 'rm -f "$SA_FILE"' EXIT
-          printf '%s' "$FIREBASE_SA_JSON" > "$SA_FILE"
-          export GOOGLE_APPLICATION_CREDENTIALS="$SA_FILE"
+          if [ "${{ steps.fn_creds.outputs.mode }}" = "sa_json" ]; then
+            SA_FILE="$(mktemp)"
+            trap 'rm -f "$SA_FILE"' EXIT
+            printf '%s' "$FIREBASE_SA_JSON" > "$SA_FILE"
+            export GOOGLE_APPLICATION_CREDENTIALS="$SA_FILE"
+          fi
           npx --yes firebase-tools@latest deploy --only functions --project "${{ inputs.firebase_project_id }}" --non-interactive
 
   # ═══════════════════════════════════════════════════════════════════
