@@ -37,7 +37,9 @@ scan_patterns() {
 
   if [[ -n "$matches" ]]; then
     while IFS= read -r m; do
-      [[ -n "$m" ]] && fail_path "$m"
+      if [[ -n "$m" ]]; then
+        fail_path "$m"
+      fi
     done <<< "$matches"
   fi
 }
@@ -59,7 +61,9 @@ check_build() {
   for f in \
     "$build_dir/assets/assets/service_account.json" \
     "$build_dir/assets/service_account.json"; do
-    [[ -f "$f" ]] && fail_path "$f exists"
+    if [[ -f "$f" ]]; then
+      fail_path "$f exists"
+    fi
   done
 }
 
