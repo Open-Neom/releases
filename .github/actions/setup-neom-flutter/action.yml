@@ -61,9 +61,11 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       run: |
-        # Remove developer-machine pubspec_overrides.yaml before invoking dart run
-        # so Dart does not complain about missing local ../neom_modules/ paths.
+        # Remove developer-machine pubspec_overrides.yaml before generating CI overrides.
+        # Run dart from .cicd_tools (which has no pubspec.yaml) so dart does not trigger
+        # a premature pub get against the app directory before overrides are written.
         rm -f pubspec_overrides.yaml
-        dart run "${{ github.action_path }}/../../../scripts/generate_ci_overrides.dart" .
+        APP_DIR="$(pwd)"
+        (cd "${{ github.action_path }}/../../.." && dart run scripts/generate_ci_overrides.dart "$APP_DIR")
         flutter --version
         flutter pub get

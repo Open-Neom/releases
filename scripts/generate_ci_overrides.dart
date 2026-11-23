@@ -24,10 +24,18 @@ void main(List<String> args) {
 
   final merged = <String, List<String>>{};
 
-  // 1. Promote all `git:` dependencies from `dependencies:` (plus `sint` if git)
+  // 1. Promote all `git:` dependencies from `dependencies:`, plus canonical
+  // ecosystem packages (`sint`, `neom_*`, `saia_*`) even when hosted so an
+  // older transitive repo declaring `sint:` from `git:` never clashes with
+  // the app's canonical `sint: ^2.3.0` (or vice versa).
   for (final entry in depsBlocks.entries) {
     final body = entry.value.join('\n');
-    if (RegExp(r'^\s+git:\s*$', multiLine: true).hasMatch(body)) {
+    final isGit = RegExp(r'^\s+git:\s*$', multiLine: true).hasMatch(body);
+    final isEcosystemCore = entry.key == 'sint' ||
+        entry.key == 'sint_sentinel' ||
+        entry.key.startsWith('neom_') ||
+        entry.key.startsWith('saia_');
+    if (isGit || isEcosystemCore) {
       merged[entry.key] = entry.value;
     }
   }
