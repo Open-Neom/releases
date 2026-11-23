@@ -23,10 +23,30 @@ runs:
       env:
         GH_PAT: ${{ inputs.gh_modules_pat }}
       run: |
-        if [ -n "$GH_PAT" ]; then
-          git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "git@github.com:"
-          git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "ssh://git@github.com/"
-          echo "Configured GitHub token rewrite for SSH module URLs."
+        # Strip accidental CR/LF or surrounding whitespace without ever printing the secret
+        CLEAN_PAT="$(printf '%s' "$GH_PAT" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        if [ -n "$CLEAN_PAT" ]; then
+          case "$CLEAN_PAT" in
+            ghp_*|github_pat_*|gho_*|ghs_*|ghu_*)
+              ;;
+            *)
+              echo "::error::GH_MODULES_PAT does not start with a valid GitHub token prefix (ghp_ / github_pat_). Re-upload it cleanly with: read -rs PAT && printf '%s' \"\$PAT\" | gh secret set GH_MODULES_PAT --repo ..."
+              exit 1
+              ;;
+          esac
+          # Use --add so subsequent insteadOf entries do NOT overwrite git@github.com:
+          git config --global --unset-all "url.https://x-access-token:${CLEAN_PAT}@github.com/.insteadOf" 2>/dev/null || true
+          git config --global --add "url.https://x-access-token:${CLEAN_PAT}@github.com/.insteadOf" "git@github.com:"
+          git config --global --add "url.https://x-access-token:${CLEAN_PAT}@github.com/.insteadOf" "ssh://git@github.com/"
+          git config --global --add "url.https://x-access-token:${CLEAN_PAT}@github.com/Open-Neom/.insteadOf" "https://github.com/Open-Neom/"
+          git config --global --add "url.https://x-access-token:${CLEAN_PAT}@github.com/Cyberneom/.insteadOf" "https://github.com/Cyberneom/"
+          git config --global --add "url.https://x-access-token:${CLEAN_PAT}@github.com/emmanuel-montoya/.insteadOf" "https://github.com/emmanuel-montoya/"
+          echo "Configured GitHub token rewrite for SSH & HTTPS Neom module URLs."
+          if ! GIT_TERMINAL_PROMPT=0 git ls-remote git@github.com:Open-Neom/neom_core.git HEAD >/dev/null 2>&1; then
+            echo "::error::GH_MODULES_PAT failed private module access check against Open-Neom/neom_core. Verify the token has 'repo' scope (or Contents: Read on Open-Neom, Cyberneom, and emmanuel-montoya) and SSO authorization if required."
+            exit 1
+          fi
+          echo "Verified private module access via GH_MODULES_PAT."
         else
           echo "::warning::GH_MODULES_PAT secret is empty. Only public GitHub modules will be accessible."
         fi
@@ -41,6 +61,9 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       run: |
+        # Remove developer-machine pubspec_overrides.yaml before invoking dart run
+        # so Dart does not complain about missing local ../neom_modules/ paths.
+        rm -f pubspec_overrides.yaml
         dart run "${{ github.action_path }}/../../../scripts/generate_ci_overrides.dart" .
         flutter --version
         flutter pub get
