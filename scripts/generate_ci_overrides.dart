@@ -95,8 +95,10 @@ void main(List<String> args) {
       'vrlizate_physics',
       'vrlizate_world',
       'vrlizate_games',
+      'vrlizate_mudras',
       'saia_core',
       'saia_gguf',
+      'saia_hey',
       'saia_turbovec',
       'neom_ollama',
     ]) {
