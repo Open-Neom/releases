@@ -1,0 +1,49 @@
+name: 'Restore Neom Secret Config Files'
+description: 'Optionally restores gitignored client config files (properties.json, google-services.json, GoogleService-Info.plist) from base64 GitHub Secrets without printing their contents.'
+
+inputs:
+  app_properties_json_base64:
+    description: 'Base64-encoded assets/properties.json'
+    required: false
+    default: ''
+  android_google_services_json_base64:
+    description: 'Base64-encoded android/app/google-services.json'
+    required: false
+    default: ''
+  ios_google_service_info_plist_base64:
+    description: 'Base64-encoded ios/Runner/GoogleService-Info.plist'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Decode Optional Config Files from Secrets
+      shell: bash
+      env:
+        PROPS_B64: ${{ inputs.app_properties_json_base64 }}
+        ANDROID_GS_B64: ${{ inputs.android_google_services_json_base64 }}
+        IOS_GS_B64: ${{ inputs.ios_google_service_info_plist_base64 }}
+      run: |
+        decode_secret_file() {
+          local b64="$1"
+          local dest="$2"
+          local clean
+          clean="$(printf '%s' "$b64" | tr -d '[:space:]')"
+          if [ -z "$clean" ]; then
+            return 0
+          fi
+          mkdir -p "$(dirname "$dest")"
+          if printf '%s' "$clean" | base64 --decode > "$dest" 2>/dev/null; then
+            echo "Restored $dest from CI secret."
+          elif printf '%s' "$clean" | base64 -D > "$dest" 2>/dev/null; then
+            echo "Restored $dest from CI secret."
+          else
+            echo "::error::Failed to base64-decode secret for $dest"
+            exit 1
+          fi
+        }
+
+        decode_secret_file "$PROPS_B64" "assets/properties.json"
+        decode_secret_file "$ANDROID_GS_B64" "android/app/google-services.json"
+        decode_secret_file "$IOS_GS_B64" "ios/Runner/GoogleService-Info.plist"

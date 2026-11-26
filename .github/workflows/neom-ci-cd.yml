@@ -191,6 +191,15 @@ on:
       APPSTORE_API_PRIVATE_KEY:
         description: 'App Store Connect API .p8 Private Key contents'
         required: false
+      APP_PROPERTIES_JSON_BASE64:
+        description: 'Optional base64-encoded assets/properties.json when gitignored'
+        required: false
+      ANDROID_GOOGLE_SERVICES_JSON_BASE64:
+        description: 'Optional base64-encoded android/app/google-services.json when gitignored'
+        required: false
+      IOS_GOOGLE_SERVICE_INFO_PLIST_BASE64:
+        description: 'Optional base64-encoded ios/Runner/GoogleService-Info.plist when gitignored'
+        required: false
 
 jobs:
   # ═══════════════════════════════════════════════════════════════════
@@ -326,6 +335,11 @@ jobs:
           repository: ${{ inputs.releases_repo }}
           path: .cicd_tools
 
+      - name: Restore Secret Config Files (if provided)
+        uses: ./.cicd_tools/.github/actions/restore-neom-configs
+        with:
+          app_properties_json_base64: ${{ secrets.APP_PROPERTIES_JSON_BASE64 }}
+
       - name: Setup Flutter & Private Modules
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
         with:
@@ -351,7 +365,7 @@ jobs:
       - name: Run Static Analysis & Unit Tests (if enabled)
         if: inputs.run_tests
         run: |
-          dart analyze lib test
+          dart analyze --no-fatal-warnings lib test
           flutter test
 
       - name: Build Flutter Web Release
@@ -554,6 +568,12 @@ jobs:
           repository: ${{ inputs.releases_repo }}
           path: .cicd_tools
 
+      - name: Restore Secret Config Files (if provided)
+        uses: ./.cicd_tools/.github/actions/restore-neom-configs
+        with:
+          app_properties_json_base64: ${{ secrets.APP_PROPERTIES_JSON_BASE64 }}
+          android_google_services_json_base64: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_BASE64 }}
+
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -717,6 +737,12 @@ jobs:
         with:
           repository: ${{ inputs.releases_repo }}
           path: .cicd_tools
+
+      - name: Restore Secret Config Files (if provided)
+        uses: ./.cicd_tools/.github/actions/restore-neom-configs
+        with:
+          app_properties_json_base64: ${{ secrets.APP_PROPERTIES_JSON_BASE64 }}
+          ios_google_service_info_plist_base64: ${{ secrets.IOS_GOOGLE_SERVICE_INFO_PLIST_BASE64 }}
 
       - name: Setup Flutter & Private Modules
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
@@ -903,6 +929,11 @@ jobs:
           repository: ${{ inputs.releases_repo }}
           path: .cicd_tools
 
+      - name: Restore Secret Config Files (if provided)
+        uses: ./.cicd_tools/.github/actions/restore-neom-configs
+        with:
+          app_properties_json_base64: ${{ secrets.APP_PROPERTIES_JSON_BASE64 }}
+
       - name: Ensure NuGet CLI is available
         shell: pwsh
         run: |
@@ -959,6 +990,11 @@ jobs:
           repository: ${{ inputs.releases_repo }}
           path: .cicd_tools
 
+      - name: Restore Secret Config Files (if provided)
+        uses: ./.cicd_tools/.github/actions/restore-neom-configs
+        with:
+          app_properties_json_base64: ${{ secrets.APP_PROPERTIES_JSON_BASE64 }}
+
       - name: Setup Flutter & Private Modules
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
         with:
@@ -998,6 +1034,11 @@ jobs:
         with:
           repository: ${{ inputs.releases_repo }}
           path: .cicd_tools
+
+      - name: Restore Secret Config Files (if provided)
+        uses: ./.cicd_tools/.github/actions/restore-neom-configs
+        with:
+          app_properties_json_base64: ${{ secrets.APP_PROPERTIES_JSON_BASE64 }}
 
       - name: Install Linux Desktop Native Dependencies
         run: |

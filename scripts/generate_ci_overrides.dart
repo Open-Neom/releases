@@ -67,8 +67,49 @@ void main(List<String> args) {
         ]);
   }
 
+  // 2b. Ensure VR / SAIA transitive packages resolve to canonical private GitHub repos
+  // whenever an app includes `neom_vr` (whose pubspec declares them as hosted semvers).
+  if (depsBlocks.containsKey('neom_vr')) {
+    void putOpenNeomGit(String pkg, [String? repoName]) {
+      final repo = repoName ?? pkg;
+      merged.putIfAbsent(pkg, () => [
+            '    git:',
+            '      url: git@github.com:Open-Neom/$repo.git',
+          ]);
+    }
+
+    for (final pkg in const [
+      'vrlizate',
+      'vrlizate_widgets',
+      'vrlizate_scene',
+      'vrlizate_joystick',
+      'vrlizate_home',
+      'vrlizate_assistant',
+      'vrlizate_apps',
+      'vrlizate_avatar',
+      'vrlizate_ble',
+      'vrlizate_cast',
+      'vrlizate_search',
+      'vrlizate_tracking',
+      'vrlizate_spatial_audio',
+      'vrlizate_physics',
+      'vrlizate_world',
+      'vrlizate_games',
+      'saia_core',
+      'saia_gguf',
+      'saia_turbovec',
+      'neom_ollama',
+    ]) {
+      putOpenNeomGit(pkg);
+    }
+    putOpenNeomGit('fllama', 'saia_fllama');
+  }
+
   // Guard against pub.dev image >=4.11.0 pairing with archive <4.4.0 (missing ZLibDecoder.decodeLazy)
-  merged.putIfAbsent('archive', () => ['INLINE:^4.5.0']);
+  // and legacy transitive flutter_secure_storage <11.0.0 constraints (e.g. neom_vr).
+  merged.putIfAbsent('archive', () => ['INLINE:^4.7.1']);
+  merged.putIfAbsent('image', () => ['INLINE:^4.13.1']);
+  merged.putIfAbsent('flutter_secure_storage', () => ['INLINE:^11.2.0']);
 
   // 3. Explicit `dependency_overrides:` inside `pubspec.yaml` take highest precedence
   for (final entry in existingOverrides.entries) {
