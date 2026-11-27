@@ -618,7 +618,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.skip_ci != 'true' && inputs.enable_android && needs.prepare.outputs.is_new_version == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Free Disk Space on Ubuntu Runner
         run: |
@@ -660,6 +660,20 @@ jobs:
           cache-dependency-path: |
             android/**/*.gradle*
             android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Detect Pinned Android NDK Version
+        id: ndk
+        run: |
+          NDK_VER="$(grep -hE 'ndkVersion' android/app/build.gradle android/app/build.gradle.kts 2>/dev/null | head -n1 | sed -nE 's/.*["'\'']([0-9]+\.[0-9]+\.[0-9]+)["'\''].*/\1/p' || true)"
+          echo "version=${NDK_VER}" >> "$GITHUB_OUTPUT"
+          echo "Detected NDK version: ${NDK_VER:-<default>}"
+
+      - name: Cache Pinned Android NDK
+        if: steps.ndk.outputs.version != ''
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/android/sdk/ndk/${{ steps.ndk.outputs.version }}
+          key: android-ndk-${{ runner.os }}-${{ steps.ndk.outputs.version }}
 
       - name: Setup Flutter & Private Modules
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
@@ -762,18 +776,25 @@ jobs:
                 mv "${BUNDLETOOL_JAR}.tmp" "$BUNDLETOOL_JAR"
               fi
               APKS_OUT="$RUNNER_TEMP/universal.apks"
-              rm -f "$APKS_OUT"
-              java -jar "$BUNDLETOOL_JAR" build-apks \
-                --bundle=build/app/outputs/bundle/release/app-release.aab \
-                --output="$APKS_OUT" \
-                --mode=universal \
-                --ks="${{ steps.signing.outputs.keystore_path }}" \
-                --ks-pass="env:STORE_PASSWORD" \
-                --ks-key-alias="$KEY_ALIAS" \
-                --key-pass="env:KEY_PASSWORD"
-              unzip -p "$APKS_OUT" universal.apk > "dist/${{ needs.prepare.outputs.safe_name }}-Android.apk"
+              KS_PASS_FILE="$RUNNER_TEMP/ks.pass"
+              KEY_PASS_FILE="$RUNNER_TEMP/key.pass"
+              (
+                umask 077
+                trap 'rm -f "$KS_PASS_FILE" "$KEY_PASS_FILE" "$APKS_OUT"' EXIT
+                rm -f "$APKS_OUT"
+                printf '%s' "$STORE_PASSWORD" > "$KS_PASS_FILE"
+                printf '%s' "$KEY_PASSWORD" > "$KEY_PASS_FILE"
+                java -jar "$BUNDLETOOL_JAR" build-apks \
+                  --bundle=build/app/outputs/bundle/release/app-release.aab \
+                  --output="$APKS_OUT" \
+                  --mode=universal \
+                  --ks="${{ steps.signing.outputs.keystore_path }}" \
+                  --ks-pass="file:${KS_PASS_FILE}" \
+                  --ks-key-alias="$KEY_ALIAS" \
+                  --key-pass="file:${KEY_PASS_FILE}"
+                unzip -p "$APKS_OUT" universal.apk > "dist/${{ needs.prepare.outputs.safe_name }}-Android.apk"
+              )
               cp "dist/${{ needs.prepare.outputs.safe_name }}-Android.apk" build/app/outputs/flutter-apk/app-release.apk
-              rm -f "$APKS_OUT"
               ls -lh "dist/${{ needs.prepare.outputs.safe_name }}-Android.apk" build/app/outputs/bundle/release/app-release.aab
             else
               flutter build apk --debug \
