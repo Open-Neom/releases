@@ -6,6 +6,10 @@ inputs:
     description: 'Flutter channel to install'
     required: false
     default: 'stable'
+  flutter_version:
+    description: 'Optional exact Flutter SDK version to pin (empty = latest on channel)'
+    required: false
+    default: ''
   gh_modules_pat:
     description: 'GitHub PAT with read access to Open-Neom, Cyberneom, and emmanuel-montoya private modules'
     required: false
@@ -55,6 +59,7 @@ runs:
       uses: subosito/flutter-action@v2
       with:
         channel: ${{ inputs.flutter_channel }}
+        flutter-version: ${{ inputs.flutter_version }}
         cache: true
 
     - name: Unify CI Git Dependency Overrides & Run flutter pub get

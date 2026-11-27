@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: 'stable'
+      flutter_version:
+        description: 'Optional exact Flutter SDK version to pin (empty = latest on channel)'
+        required: false
+        type: string
+        default: ''
       build_number_offset:
         description: 'Optional fallback offset only if pubspec.yaml has no +build suffix'
         required: false
@@ -349,6 +354,7 @@ jobs:
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
         with:
           flutter_channel: ${{ inputs.flutter_channel }}
+          flutter_version: ${{ inputs.flutter_version }}
           gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
 
       - name: Setup Node.js
@@ -456,22 +462,39 @@ jobs:
             export GOOGLE_APPLICATION_CREDENTIALS="$SA_FILE"
           fi
 
-          TARGETS="hosting"
+          HOSTING_TARGET="hosting"
           if [ -n "${{ inputs.hosting_target }}" ]; then
-            TARGETS="hosting:${{ inputs.hosting_target }}"
+            HOSTING_TARGET="hosting:${{ inputs.hosting_target }}"
           fi
+
+          echo "Deploying Firebase Hosting: ${HOSTING_TARGET} -> ${{ inputs.firebase_project_id }} (auth=${{ steps.fb_creds.outputs.mode }})"
+          npx --yes firebase-tools@latest deploy --only "${HOSTING_TARGET}" --project "${{ inputs.firebase_project_id }}" --non-interactive
+
+          RULES_TARGETS=""
           if [ "${{ inputs.deploy_firestore_rules }}" = "true" ] && [ "${{ needs.prepare.outputs.has_firestore_rules }}" = "true" ]; then
-            TARGETS="${TARGETS},firestore:rules"
+            RULES_TARGETS="firestore:rules"
             if [ "${{ needs.prepare.outputs.has_firestore_indexes }}" = "true" ]; then
-              TARGETS="${TARGETS},firestore:indexes"
+              RULES_TARGETS="${RULES_TARGETS},firestore:indexes"
             fi
           fi
           if [ "${{ inputs.deploy_storage_rules }}" = "true" ] && [ "${{ needs.prepare.outputs.has_storage_rules }}" = "true" ]; then
-            TARGETS="${TARGETS},storage"
+            RULES_TARGETS="${RULES_TARGETS:+${RULES_TARGETS},}storage"
           fi
 
-          echo "Deploying Firebase targets: ${TARGETS} -> ${{ inputs.firebase_project_id }} (auth=${{ steps.fb_creds.outputs.mode }})"
-          npx --yes firebase-tools@latest deploy --only "${TARGETS}" --project "${{ inputs.firebase_project_id }}" --non-interactive
+          if [ -n "$RULES_TARGETS" ]; then
+            echo "Deploying Firebase Rules/Storage: ${RULES_TARGETS} -> ${{ inputs.firebase_project_id }}"
+            for attempt in 1 2 3; do
+              if npx --yes firebase-tools@latest deploy --only "${RULES_TARGETS}" --project "${{ inputs.firebase_project_id }}" --non-interactive; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::Firebase Rules/Storage deploy failed after 3 attempts."
+                exit 1
+              fi
+              echo "::warning::Transient Firebase Rules/Storage error (attempt $attempt/3); retrying in 15s..."
+              sleep 15
+            done
+          fi
 
   # ═══════════════════════════════════════════════════════════════════
   # 3. FIREBASE CLOUD FUNCTIONS
@@ -589,6 +612,7 @@ jobs:
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
         with:
           flutter_channel: ${{ inputs.flutter_channel }}
+          flutter_version: ${{ inputs.flutter_version }}
           gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
 
       - name: Cache Verified ONNX Runtime Android AAR (if required by app)
@@ -753,6 +777,7 @@ jobs:
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
         with:
           flutter_channel: ${{ inputs.flutter_channel }}
+          flutter_version: ${{ inputs.flutter_version }}
           gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
 
       - name: Build & Sign iOS IPA (Automatic Cloud Signing via App Store Connect API)
@@ -950,6 +975,7 @@ jobs:
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
         with:
           flutter_channel: ${{ inputs.flutter_channel }}
+          flutter_version: ${{ inputs.flutter_version }}
           gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
 
       - name: Build Windows Release
@@ -1004,6 +1030,7 @@ jobs:
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
         with:
           flutter_channel: ${{ inputs.flutter_channel }}
+          flutter_version: ${{ inputs.flutter_version }}
           gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
 
       - name: Build macOS Release & Package .dmg
@@ -1059,6 +1086,7 @@ jobs:
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
         with:
           flutter_channel: ${{ inputs.flutter_channel }}
+          flutter_version: ${{ inputs.flutter_version }}
           gh_modules_pat: ${{ secrets.GH_MODULES_PAT }}
 
       - name: Build Linux Release & Package .AppImage
