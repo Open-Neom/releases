@@ -100,6 +100,11 @@ on:
         required: false
         type: string
         default: ''
+      android_java_version:
+        description: 'JDK version for Android Gradle builds (17 default; 21 for AGP/Kotlin JVM 21 apps)'
+        required: false
+        type: string
+        default: '17'
       play_track:
         description: 'Google Play track (production, internal, alpha, beta)'
         required: false
@@ -574,11 +579,11 @@ jobs:
           app_properties_json_base64: ${{ secrets.APP_PROPERTIES_JSON_BASE64 }}
           android_google_services_json_base64: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_BASE64 }}
 
-      - name: Setup Java 17
+      - name: Setup Java ${{ inputs.android_java_version }}
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: ${{ inputs.android_java_version }}
 
       - name: Setup Flutter & Private Modules
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
