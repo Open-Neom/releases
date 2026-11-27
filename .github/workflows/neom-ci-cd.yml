@@ -656,6 +656,10 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: ${{ inputs.android_java_version }}
+          cache: 'gradle'
+          cache-dependency-path: |
+            android/**/*.gradle*
+            android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Setup Flutter & Private Modules
         uses: ./.cicd_tools/.github/actions/setup-neom-flutter
@@ -695,6 +699,7 @@ jobs:
           storeFile=${PWD}/android/app/${JKS_NAME}
           EOF
             echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "keystore_path=${PWD}/android/app/${JKS_NAME}" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::ANDROID_KEYSTORE_BASE64 / ANDROID_KEY_ALIAS not configured yet; building unsigned/debug-signed artifacts only."
             echo "signed=false" >> "$GITHUB_OUTPUT"
@@ -705,7 +710,26 @@ jobs:
             echo "has_play_sa=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Tune Gradle & Kotlin JVM Memory for CI Runner
+        run: |
+          TOTAL_MB=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 16384)
+          echo "Runner RAM: ${TOTAL_MB} MB"
+          if [ "$TOTAL_MB" -le 9216 ]; then
+            mkdir -p "$HOME/.gradle"
+            cat >> "$HOME/.gradle/gradle.properties" <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx1280m
+          org.gradle.workers.max=2
+          org.gradle.caching=true
+          EOF
+            echo "Applied 7GB-runner Gradle/Kotlin JVM tuning in ~/.gradle/gradle.properties"
+          fi
+
       - name: Build Android App Bundle (.aab) & Universal APK (.apk)
+        env:
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
           if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
             flutter build appbundle --release --no-tree-shake-icons \
@@ -714,11 +738,36 @@ jobs:
           fi
           if [ "${{ inputs.publish_apk_to_releases }}" = "true" ]; then
             if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
-              flutter build apk --release --no-tree-shake-icons \
-                --build-name="${{ needs.prepare.outputs.semver }}" \
-                --build-number="${{ needs.prepare.outputs.build_number }}"
-              mkdir -p dist
-              cp build/app/outputs/flutter-apk/app-release.apk "dist/${{ needs.prepare.outputs.safe_name }}-Android.apk"
+              # Extract signed universal APK directly from the built .aab (~10s)
+              # instead of running a second full Flutter + Gradle + R8 build.
+              BUNDLETOOL_VER="1.18.3"
+              BUNDLETOOL_SHA="a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29"
+              BUNDLETOOL_JAR="$HOME/.gradle/caches/neom-artifacts/bundletool-all-${BUNDLETOOL_VER}.jar"
+              mkdir -p "$(dirname "$BUNDLETOOL_JAR")" dist build/app/outputs/flutter-apk
+              if [ ! -f "$BUNDLETOOL_JAR" ] || [ "$(sha256sum "$BUNDLETOOL_JAR" | awk '{print $1}')" != "$BUNDLETOOL_SHA" ]; then
+                curl -fsSL -o "${BUNDLETOOL_JAR}.tmp" \
+                  "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VER}/bundletool-all-${BUNDLETOOL_VER}.jar"
+                ACTUAL_SHA="$(sha256sum "${BUNDLETOOL_JAR}.tmp" | awk '{print $1}')"
+                if [ "$ACTUAL_SHA" != "$BUNDLETOOL_SHA" ]; then
+                  echo "::error::bundletool SHA-256 mismatch: expected ${BUNDLETOOL_SHA}, got ${ACTUAL_SHA}"
+                  exit 1
+                fi
+                mv "${BUNDLETOOL_JAR}.tmp" "$BUNDLETOOL_JAR"
+              fi
+              APKS_OUT="$RUNNER_TEMP/universal.apks"
+              rm -f "$APKS_OUT"
+              java -jar "$BUNDLETOOL_JAR" build-apks \
+                --bundle=build/app/outputs/bundle/release/app-release.aab \
+                --output="$APKS_OUT" \
+                --mode=universal \
+                --ks="${{ steps.signing.outputs.keystore_path }}" \
+                --ks-pass="env:STORE_PASSWORD" \
+                --ks-key-alias="$KEY_ALIAS" \
+                --key-pass="env:KEY_PASSWORD"
+              unzip -p "$APKS_OUT" universal.apk > "dist/${{ needs.prepare.outputs.safe_name }}-Android.apk"
+              cp "dist/${{ needs.prepare.outputs.safe_name }}-Android.apk" build/app/outputs/flutter-apk/app-release.apk
+              rm -f "$APKS_OUT"
+              ls -lh "dist/${{ needs.prepare.outputs.safe_name }}-Android.apk" build/app/outputs/bundle/release/app-release.aab
             else
               flutter build apk --debug \
                 --build-name="${{ needs.prepare.outputs.semver }}" \
