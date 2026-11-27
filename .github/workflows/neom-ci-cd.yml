@@ -472,7 +472,20 @@ jobs:
 
           if [ "${{ inputs.deploy_firestore_rules }}" = "true" ] && [ "${{ needs.prepare.outputs.has_firestore_indexes }}" = "true" ]; then
             echo "Deploying Firestore Indexes -> ${{ inputs.firebase_project_id }}"
-            npx --yes firebase-tools@latest deploy --only "firestore:indexes" --project "${{ inputs.firebase_project_id }}" --non-interactive
+            # Work around firebase-tools bug where --only firestore:indexes still compiles firestore.rules
+            (
+              IDX_CFG=".firebase-indexes-only.tmp.json"
+              trap 'rm -f "$IDX_CFG"' EXIT
+              node -e '
+                const fs = require("fs");
+                const cfg = JSON.parse(fs.readFileSync("firebase.json", "utf8"));
+                const strip = (entry) => { const c = { ...entry }; delete c.rules; return c; };
+                if (Array.isArray(cfg.firestore)) cfg.firestore = cfg.firestore.map(strip);
+                else if (cfg.firestore) cfg.firestore = strip(cfg.firestore);
+                fs.writeFileSync(".firebase-indexes-only.tmp.json", JSON.stringify(cfg, null, 2));
+              '
+              npx --yes firebase-tools@latest deploy --only "firestore:indexes" --config "$IDX_CFG" --project "${{ inputs.firebase_project_id }}" --non-interactive
+            )
           fi
 
           if [ "${{ inputs.deploy_firestore_rules }}" = "true" ] && [ "${{ needs.prepare.outputs.has_firestore_rules }}" = "true" ]; then
