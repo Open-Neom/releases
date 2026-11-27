@@ -714,15 +714,22 @@ jobs:
         run: |
           TOTAL_MB=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 16384)
           echo "Runner RAM: ${TOTAL_MB} MB"
+          mkdir -p "$HOME/.gradle"
           if [ "$TOTAL_MB" -le 9216 ]; then
-            mkdir -p "$HOME/.gradle"
             cat >> "$HOME/.gradle/gradle.properties" <<'EOF'
-          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          kotlin.daemon.jvmargs=-Xmx1280m
+          org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=768m -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx1g
           org.gradle.workers.max=2
+          android.r8.maxWorkers=2
+          org.gradle.caching=true
+          org.gradle.vfs.watch=false
+          EOF
+            echo "Applied 7GB-runner Gradle/R8/Kotlin JVM tuning in ~/.gradle/gradle.properties"
+          else
+            cat >> "$HOME/.gradle/gradle.properties" <<'EOF'
+          org.gradle.vfs.watch=false
           org.gradle.caching=true
           EOF
-            echo "Applied 7GB-runner Gradle/Kotlin JVM tuning in ~/.gradle/gradle.properties"
           fi
 
       - name: Build Android App Bundle (.aab) & Universal APK (.apk)
