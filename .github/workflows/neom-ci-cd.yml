@@ -973,12 +973,29 @@ jobs:
             }
           '
 
-          # 3. Build Archive & Export IPA with Xcode Automatic Cloud Provisioning
-          flutter build xcarchive --release --no-tree-shake-icons \
+          # 3. Build Flutter iOS release & Archive with Xcode Automatic Cloud Provisioning
+          flutter build ios --release --no-codesign --no-tree-shake-icons \
             --build-name="${{ needs.prepare.outputs.semver }}" \
             --build-number="${{ needs.prepare.outputs.build_number }}"
 
-          ARCHIVE_PATH="$(find build/ios/archive -maxdepth 1 -name '*.xcarchive' | head -n 1)"
+          ARCHIVE_PATH="$PWD/build/ios/archive/Runner.xcarchive"
+          rm -rf "$ARCHIVE_PATH" "$PWD/build/ios/ipa"
+          mkdir -p "$PWD/build/ios/archive" "$PWD/build/ios/ipa"
+
+          xcodebuild archive \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_FILE" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="${{ inputs.apple_team_id }}" \
+            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_IDENTITY="Apple Distribution"
+
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
